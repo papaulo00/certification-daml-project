@@ -1,8 +1,6 @@
 # Daml Trading Market App
 
 ## Overview
-
-Overview
 This project was created by using the empty-skeleton template. The project adopts and exemplifies the proposal-accept design pattern. It was designed for a Trading Market App scenario.
 The trader can create a TradeProposal contracts and "Cancel" & admin can exercise "ViewTrades", "Reject" or "Verify". The owner of the Tradeable can accept the trade.
 
