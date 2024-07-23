@@ -1,44 +1,143 @@
 module Main where
 
-import Daml.Script
+import DA.Time
+import DA.Date (subDate)
 
-type AssetId = ContractId Asset
+type TradeProposalId = ContractId TradeProposal
+type TradeId = ContractId Trade
 
-template Asset
-  with
-    issuer : Party
-    owner  : Party
-    name   : Text
-  where
-    ensure name /= ""
-    signatory issuer
-    observer owner
-    choice Give : AssetId
-      with
-        newOwner : Party
-      controller owner
-      do create this with
-           owner = newOwner
 
-setup : Script AssetId
-setup = script do
--- user_setup_begin
-  alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
-  bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
-  aliceId <- validateUserId "alice"
-  bobId <- validateUserId "bob"
-  createUser (User aliceId (Some alice)) [CanActAs alice]
-  createUser (User bobId (Some bob)) [CanActAs bob]
--- user_setup_end
+data Tradeable = Tradeable with
+    owner: Party
+    name: Text
+    rarety: Text
+    previousOwner: Optional Party
+        deriving (Show, Eq, Ord)
 
-  aliceTV <- submit alice do
-    createCmd Asset with
-      issuer = alice
-      owner = alice
-      name = "TV"
 
-  bobTV <- submit alice do
-    exerciseCmd aliceTV Give with newOwner = bob
+template TradeProposal
+    with
+        trader: Party
+        tradeable: Tradeable
+        id: Text
+        admin: Party
+        note: Optional Text
+        state: Text
+        verified: Bool
+        dateOfProposal: Date
+    where
+        signatory trader
+        observer tradeable.owner, admin
+        
+        ensure trader /= tradeable.owner -- trader can not create a TradeProposal where he owns the tradeable
 
-  submit bob do
-    exerciseCmd bobTV Give with newOwner = alice
+        key (trader, id) : (Party, Text)
+        maintainer key._1
+        
+        
+        choice RequestTrade: TradeProposalId
+            with 
+                trader: Party
+                tradeable: Tradeable
+                admin: Party
+                note: Optional Text
+                state: Text
+                
+
+            controller trader
+            do  
+                assertMsg "You can't request a Trade with a tradeable that you already own!" (trader == tradeable.owner)
+                create this with
+                    trader
+                    tradeable
+                    admin
+                    state = "Pending"
+                    verified = False
+                    dateOfProposal
+                    note
+
+        -- trader can Accept the TradeProposal & create a Trade contract
+        choice AcceptTrade: TradeId
+            controller tradeable.owner
+            do
+                assertMsg "Trade Proposal hasnt been verified by admin. Please try later." (verified)
+                let updatedTradeable = Tradeable with
+                        owner = trader
+                        rarety = tradeable.rarety
+                        name = tradeable.name
+                        previousOwner = Some tradeable.owner
+
+                create Trade with
+                    trader
+                    tradeable = updatedTradeable
+                    approvedBy = admin
+                    comment = None
+
+        -- trader can cancel the proposal (if the proposal hasnt been Verified and Accepted)
+        choice Cancel: TradeProposalId
+            with    
+                note: Optional Text
+           
+            controller trader
+            do
+                 create TradeProposal with
+                    verified = True
+                    note
+                    state = "Cancelled"
+                    ..
+
+        -- admin can Reject the trade setting the state as Rejected
+        choice Reject: TradeProposalId
+            with
+                note: Optional Text
+            controller admin
+            do
+                create this with
+                    state = "Rejected"
+                    note
+
+        -- admin can Verify the Trade Proposal 
+        choice Verify: TradeProposalId
+            with
+                adminNote: Optional Text
+            controller admin
+            do
+                --debug $ this.tradeable
+                create this with
+                    verified = True
+                    note = adminNote
+                    
+                    
+       
+template Trade
+    with
+        trader: Party
+        tradeable: Tradeable
+        approvedBy: Party
+        comment: Optional(Text)
+    where
+        signatory trader
+        observer approvedBy, tradeable.previousOwner
+
+        key (trader, tradeable):(Party, Tradeable)
+        maintainer key._1
+
+        -- admin can view all available trades
+        nonconsuming choice ViewTrades: (Either([Text])(Text))
+            with
+                trades: [(TradeId, Trade)]
+            controller approvedBy
+            do
+            
+                if null trades then return (Right "No Trades available" )
+                else do
+                    return (Left $ map (\trade -> "Trade: " <> trade._2.tradeable.name <> " | Rarety: " <> trade._2.tradeable.rarety ) trades)
+       
+
+        
+  
+       
+                
+                
+
+

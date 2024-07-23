@@ -1,0 +1,137 @@
+module Setup where
+
+import Main
+import DA.Date
+import Daml.Script
+
+data TestParties = TestParties with
+    trader1: Party
+    trader2: Party
+    admin: Party
+
+setupTestParties : Script TestParties
+setupTestParties = script do
+    -- 1. Allocate parties with the given display name
+    trader1 <- allocatePartyWithHint "Trader1" (PartyIdHint "TR1")
+    trader2 <- allocatePartyWithHint "Trader2" (PartyIdHint "TR2")
+    admin <- allocatePartyWithHint "Admin" (PartyIdHint "AD")
+
+    return TestParties with
+        trader1
+        trader2
+        admin
+
+setupUsers : Script (ContractId TradeProposal)
+setupUsers = script do
+    (testParties@TestParties{..}, testTradeabless@TestTradeables{..}) <- setupTradeables
+
+    -- 2. Construct user-ids from text
+    adminId <- validateUserId "Admin"   
+    aliceId <- validateUserId "Alice"
+    bobId <- validateUserId "Bob"
+
+    -- 3. Create users with the given rights 
+    createUser (User adminId (Some admin)) [CanActAs admin]  
+    createUser (User aliceId (Some trader1)) [CanActAs trader1]
+    createUser (User bobId (Some trader2)) [CanActAs trader2]
+    
+    submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable3
+            id = "0003"
+            admin
+            state = "Pending"
+            note = Some "Trader1 proposes trade for tradeable3"
+            verified = False  
+            dateOfProposal = date 2024 Jul 20
+    
+
+data TestTradeables = TestTradeables with
+    tradeable1: Tradeable
+    tradeable2: Tradeable
+    tradeable3: Tradeable
+    tradeable4: Tradeable
+    tradeable5: Tradeable
+
+setupTradeables : Script (TestParties, TestTradeables)
+setupTradeables = script do
+    testParties@TestParties{..} <- setupTestParties
+
+    let
+        tradeable1 = Tradeable with
+            owner = trader2
+            rarety = "Uncommon"
+            name = "Tradeable1"
+            previousOwner = Some trader1
+
+        tradeable2 = Tradeable with
+            owner = trader2
+            rarety = "Common"
+            name = "Tradeable2"
+            previousOwner = Some trader1
+
+        tradeable3 = Tradeable with
+            owner = trader2
+            rarety = "Rare"
+            name = "Tradeable3"
+            previousOwner = None
+
+        tradeable4 = Tradeable with
+            owner = trader2
+            rarety = "Epic"
+            name = "Tradeable4"
+            previousOwner = None
+
+        tradeable5 = Tradeable with
+            owner = trader1
+            rarety = "Legendary"
+            name = "Tradeable5"
+            previousOwner = Some trader2
+
+    return (testParties, TestTradeables with {tradeable1, tradeable2, tradeable3, tradeable4,tradeable5})
+
+
+setupTrades : Script (TestParties, TestTradeables, TradeProposalId, ContractId TradeProposal)
+setupTrades = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..}) <- setupTradeables
+    now <- getTime
+    proposal2 <- submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable1
+            id = "0002"
+            verified = True
+            state = "Pending"
+            admin
+            note = Some "Trader1 proposes trade for tradeable1"
+            dateOfProposal = date 2024 Jul 20
+
+    proposal3 <- submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable2
+            id = "0003"
+            verified = True
+            state = "Pending"
+            admin
+            note = Some "Trader1 proposes trade for tradeable2"
+            dateOfProposal = date 2024 Jul 12
+
+    tradeProposal4 <- submit trader2 do
+        createCmd TradeProposal with
+            trader = trader2
+            tradeable = tradeable5
+            id = "0005"
+            state = "Pending"
+            admin
+            verified = False
+            note = Some "Trader1 proposes trade for tradeable5"
+            dateOfProposal = date 2024 Jun 20
+
+    trade2Approved <- submit admin do
+        exerciseCmd proposal2 Verify with
+          adminNote = Some "Trade Proposal #2 has been verified"
+        
+
+    return (testParties, testTradeables, trade2Approved, proposal3)

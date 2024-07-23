@@ -1,0 +1,193 @@
+module Test where
+
+import Main
+import Setup
+import DA.Date
+import Daml.Script
+
+{-
+    Min 1 Full Scenario & Min 3 Happy Paths
+        + testCreateTradeProposal: trader creates TradeProposal contract and admin can exercise "checkTradeProposal" to either "Reject" or "Verify"
+            1. trader creates TradeProposal contract 
+        + testTradeProposal: client and admin can exercise Reject and Cancel
+            2. admin exercises "Reject" with a reason: "The Trade Proposal is Not Fully Credible""
+            3. client exercises Cancel to cancel the proposal
+        + testCreateTrade: admin can Review the proposal and approve it, this will create the trade
+        + testTrades: admin can view all tradeProposals
+        + testRejectOldTradeProposals: admin can Reject tradeProposal if date of proposal older than 10 days
+        
+    Min 3 Unhappy Paths
+        - testCreateTradeProposalWithTradeableAlreadyOwned: trader cannot create a Trade Proposal wiht a tradeable he already owns
+        - testVerifyTradeAsATrader: trader can not Verify a TradeProposal
+        - testTraderAcceptTradeWhenNotVerified: trader can not AcceptTrade if trade is not verified
+        - testAdminAcceptTrade: admin tries to accept a TradeProposal
+-}
+
+
+-- + testCreateTradeProposal: trader creates TradeProposal contract and admin can exercise "checkTradeProposal" to either "Reject" or "Verify"
+testCreateTradeProposal : Script (TestParties, TestTradeables, TradeProposalId, ContractId TradeProposal, ContractId TradeProposal)
+testCreateTradeProposal = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},trade2Approved, tradeProposal3) <- setupTrades
+    -- 1. trader creates TradeProposal contract
+    tradeProposal1 <- submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable4
+            id = "0004"
+            state = "Pending"
+            admin
+            verified = False
+            note = Some "Trader1 proposes trade for tradeable4"
+            dateOfProposal = date 2024 Jul 20
+
+
+    return (testParties, testTradeables, tradeProposal1, trade2Approved, tradeProposal3)
+
+-- + testTradeProposal: trader and admin can exercise Reject and Cancel
+testTradeProposal : Script (TestParties, TestTradeables, TradeProposalId, TradeProposalId, ContractId TradeProposal)
+testTradeProposal = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..}, tradeProposal1, trade2Approved, tradeProposal3) <- testCreateTradeProposal
+    -- 2. admin exercises "Reject" with a note: "Trade Proposal"
+    proposal3Rejected <- submit admin do
+        exerciseCmd tradeProposal3 Reject with
+            note = Some "The Trade Proposal #3 is Not Fully Credible"
+            
+    -- 3. trader exercises Cancel to cancel the proposal
+    proposal2Cancelled <- submit trader1 do
+        exerciseCmd trade2Approved Cancel with
+            note =  Some "Trade Proposal #2 Cancelled by Requester" 
+    
+
+    return (testParties, testTradeables, tradeProposal1, proposal2Cancelled, proposal3Rejected ) 
+
+
+-- + testCreateTrade: admin can Verify the Proposal and Trader2 can Accept the TradeProposal which creates a Trade Contract
+testCreateTrade : Script (TestParties, TestTradeables, TradeId, TradeProposalId, ContractId TradeProposal)
+testCreateTrade = script do 
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..}, tradeProposal1,trade2Approved,proposal3Cancelled) <- testTradeProposal          
+    -- admin exercises "Verify"
+    proposal1Verified <- submit admin do
+        exerciseCmd tradeProposal1 Verify with
+            adminNote = Some "Trade Proposal #1 has been verified"
+    -- trader2 exercises "AcceptTrade" and creates a Trade
+    proposal1Accepted <- submit trader2 do
+        exerciseCmd proposal1Verified AcceptTrade
+            
+    return(testParties, testTradeables,proposal1Accepted, trade2Approved, proposal3Cancelled)
+
+
+-- + testTrades: admin can view all tradeProposals
+testTrades : Script (TestParties, TestTradeables, TradeId, TradeProposalId, ContractId TradeProposal)
+testTrades = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},proposal1Accepted, trade2Approved, proposal3Cancelled) <- testCreateTrade          
+    queryTrades <- query @Trade admin
+    --5. admin can exercise "ViewTrades" to check existing trades
+    allTrades <- submit admin do
+        exerciseCmd proposal1Accepted ViewTrades with
+            trades = queryTrades
+    
+    debug $ allTrades
+    return(testParties, testTradeables, proposal1Accepted, trade2Approved, proposal3Cancelled)
+
+-- + testRejectOldTradeProposals: admin can Reject tradeProposal if date of proposal older than 10 days
+testRejectOldTradeProposals : Script (TestParties, TestTradeables, TradeId, TradeProposalId, ContractId TradeProposal)
+testRejectOldTradeProposals = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},proposal1Accepted, trade2Approved, proposal3Cancelled) <- testCreateTrade          
+   
+    --6. admin can exercise "Reject" on all TradeProposals found that are older than 10 days
+    let todaysDate = date 2024 Jul 22
+    oldTradeProposals <- queryFilter 
+        @TradeProposal 
+        admin 
+        \tradeProposal -> ((subDate todaysDate tradeProposal.dateOfProposal ) > 10) 
+
+    let oldTradeProposalsIds = map (\prop -> prop._1) oldTradeProposals
+
+    allTradeProposal <- submit admin do 
+        mapA (\x -> exerciseCmd x Reject with note = Some "Date of proposal older than 10 days.") oldTradeProposalsIds
+
+    return(testParties, testTradeables, proposal1Accepted, trade2Approved, proposal3Cancelled)
+
+-- Unhappy Paths
+-- +testCreateTradeProposalWithTradeableAlreadyOwned: trader cannot create a Trade Proposal wiht a tradeable he already owns
+testCreateTradeProposalWithTradeableAlreadyOwned : Script ()
+testCreateTradeProposalWithTradeableAlreadyOwned = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..}) <- setupTradeables
+    
+    submitMustFail trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable5
+            id = "0005"
+            admin
+            state = "Pending"
+            note = Some "Trader1 proposes trade for tradeable5"
+            verified = False  
+            dateOfProposal = date 2024 Jul 20
+
+-- +testVerifyTradeAsATrader: trader can not Verify a TradeProposal 
+
+testVerifyTradeAsATrader : Script (TestParties, TestTradeables, ContractId TradeProposal)
+testVerifyTradeAsATrader = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},trade2Approved, tradeProposal3) <- setupTrades
+    
+    proposal6 <- submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable2
+            id = "0006"
+            verified = False
+            state = "Pending"
+            admin
+            note = Some "Trader1 proposes trade for tradeable2"
+            dateOfProposal = date 2024 Jul 12
+    
+    -- trader1 exercises "Verify"
+    submitMustFail trader1 do
+        exerciseCmd proposal6 Verify with
+            adminNote = Some "Trade Proposal #6 has been verified"
+
+    -- trader2 exercises "Verify"
+    submitMustFail trader1 do
+        exerciseCmd proposal6 Verify with
+            adminNote = Some "Trade Proposal #6 has been verified"
+
+    return(testParties, testTradeables, proposal6)
+
+-- +testTraderAcceptTradeWhenNotVerified: trader can not AcceptTrade if trade is not verified
+testTraderAcceptTradeWhenNotVerified : Script ()
+testTraderAcceptTradeWhenNotVerified = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},proposal6) <- testVerifyTradeAsATrader
+    
+     -- trader2 exercises "AcceptTrade" on a not verified TradeProposal
+    submitMustFail trader2 do
+        exerciseCmd proposal6 AcceptTrade 
+
+   
+
+-- +testAdminAcceptTrade: admin tries to accept a TradeProposal
+testAdminAcceptTrade : Script ()
+testAdminAcceptTrade = script do
+    (testParties@TestParties{..}, testTradeables@TestTradeables{..},trade2Approved, tradeProposal3) <- setupTrades
+    
+    proposal7 <- submit trader1 do
+        createCmd TradeProposal with
+            trader = trader1
+            tradeable = tradeable2
+            id = "0007"
+            verified = False
+            state = "Pending"
+            admin
+            note = Some "Trader1 proposes trade for tradeable2"
+            dateOfProposal = date 2024 Jul 12
+    
+    -- trader1 exercises "Verify"
+    proposal7 <- submit admin do
+        exerciseCmd proposal7 Verify with
+            adminNote = Some "Trade Proposal #7 has been verified"
+
+    -- trader2 exercises "Verify"
+    submitMustFail admin do
+        exerciseCmd proposal7 AcceptTrade
+    
+    return ()
